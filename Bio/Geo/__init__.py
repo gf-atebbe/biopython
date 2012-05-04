@@ -1,59 +1,70 @@
-# Copyright 2001 by Katharine Lindner.  All rights reserved.
-# Copyright 2006 by PeterC.  All rights reserved.
-# Copyright 2007 by Michiel de Hoon.  All rights reserved.
-# This code is part of the Biopython distribution and governed by its
-# license.  Please see the LICENSE file that should have been included
-# as part of this package.
-"""Parser for files from NCBI's Gene Expression Omnibus (GEO).
+import re
 
-http://www.ncbi.nlm.nih.gov/geo/
-"""
+from Records import Record, Series
 
-import Record
+def parse(source):
+    """Returns a record or series object from the source."""
+
+    # Implementation notes:
+    # User-facing behavior is always to return one record.
+    # However, we may be parsing a series .soft file, which
+    # may contain many records, and we would like the ability to
+    # iteratively parse these to build the final Series object.
+    for geo in _iterparse(source):
+        return geo 
+
+
+def _iterparse(source):
+    """Yields the records found in the source."""
+    assert not isinstance(source, str)
+
+    # Filter out database information
+    source = [x for x in source if not re.match(r'[!\^]Database', x, re.I)]
+    record = None
+    for line in source:
+        line = line.strip('\n\r')
+        if not line: continue
+        c = line[0]
+
+        if c == '^':
+            if record: yield record
+            type, id = _read_key_value(line)
+            if type == 'SERIES':
+                record = Series(id)
+                series_meta = [x for x in source if re.match(r'!Series', x)]
+                rest = [x for x in source if not re.match(r'[!\^]Series', x, re.I)]
+                # Parse the metadata in one loop
+                for line in series_meta:
+                    key, value = _read_key_value(line)
+                    record.meta[key] = value
+                # Parse the rest of the records iteratively
+                for subrecord in _iterparse(rest):
+                    if subrecord.type == 'PLATFORM':
+                        record.platforms.append(subrecord)
+                    elif subrecord.type == 'SAMPLE':
+                        record.samples.append(subrecord)
+            else:
+                record = Record(type, id)
+        elif c == '!':
+            if re.match(r'!(Sample|Platform)_table_(begin|end)', line, re.I):
+                continue
+            key, value = _read_key_value(line)
+            record.meta[key] = value
+        elif c == '#':
+            key, value = _read_key_value(line)
+            record.columns[key] = value
+        else:
+            row = line.split('\t')
+            record.table.append(row)
 
 
 def _read_key_value(line):
-    words = line[1:].split("=", 1)
+    words = line[1:].split('=', 1)
     try:
         key, value = words
         value = value.strip()
     except ValueError:
         key = words[0]
-        value = ""
+        value = ''
     key = key.strip()
     return key, value
-
-
-def parse(handle):
-    record = None
-    for line in handle:
-        line = line.strip('\n').strip('\r')
-        if not line: continue # Ignore empty lines
-        c = line[0]
-        if c=='^':
-            if record: yield record
-            record = Record.Record()
-            record.entity_type, record.entity_id = _read_key_value(line)
-        elif c=='!':
-            if line in ('!Sample_table_begin',
-                        '!Sample_table_end',
-                        '!Platform_table_begin',
-                        '!Platform_table_end'):
-                continue
-            key, value = _read_key_value(line)
-            if key in record.entity_attributes:
-                if type(record.entity_attributes[key])==list:
-                    record.entity_attributes[key].append(value)
-                else:
-                    existing = record.entity_attributes[key]
-                    record.entity_attributes[key] = [existing, value]
-            else:
-                record.entity_attributes[key] = value
-        elif c=='#':
-            key, value = _read_key_value(line)
-            assert key not in record.col_defs
-            record.col_defs[key] = value
-        else:
-            row = line.split("\t")
-            record.table_rows.append(row)
-    yield record
