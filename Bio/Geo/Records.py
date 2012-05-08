@@ -1,4 +1,12 @@
 import re
+from collections import defaultdict
+from copy import deepcopy
+import numpy
+from numpy import array
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+    import scipy.stats as stats
 
 def truncate(string, trunc=20):
     length = len(string)
@@ -27,7 +35,7 @@ def pad(string, pad_to=20, justify='left'):
         spaces = ''.join([' ' for x in xrange(spacing)])
         return string+spaces
 
-class SoftFile(object):
+class SOFTRecord(object):
     """Base class for SOFT-format file representations (GDS, GSE, GSM, and GPL).
 
     SOFT file format structure:
@@ -55,9 +63,10 @@ class SoftFile(object):
             print("%s:\t%s" % (entry, self.meta[entry]))
 
 
-class Record(SoftFile):
-    """Represents the three basic GEO record types: datasets (GDS), samples (GSM), and platforms (GPL).
-    GEO Series are special records that contain samples and platforms and are defined in the Series object.
+class Record(SOFTRecord):
+    """Represents two basic GEO record types: samples (GSM), and platforms (GPL).
+    
+    GEO Datasets and Series are special records that have their own classes.
 
     Attributes:
         id:      entity id (GEO accession)
@@ -65,8 +74,8 @@ class Record(SoftFile):
         meta:    metadata information for the record {key:value}
         table:   list of rows, split by tabs. First row is the header. 
                  [header, row1, row2, ...]
-        columns: column names, descriptions, and (if dataset), factor subtypes. 
-                 {colname: {description:'', factor1:'', factor2:'', ...}}
+        columns: column names and descriptions.
+                 {colname: description}
     """
         
     def __init__(self, type, id):
@@ -105,7 +114,97 @@ class Record(SoftFile):
                 print("\t[...]")
                 printed_ellipses = True
 
-class Series(SoftFile):
+    def print_columns(self):
+        """Prints the column information associated with the data table."""
+        for col in self.columns:
+            print("%s:\t%s" % (col, self.columns[col]['description']))
+
+
+
+class Dataset(Record):
+    """Represents a GEO Dataset (GDS) record.
+
+    Attributes:
+        id:      entity id (GEO accession)
+        type:    entity type
+        meta:    metadata information for the record {key:value}
+        table:   list of rows, split by tabs. First row is the header. 
+                 [header, row1, row2, ...]
+        columns: column names, descriptions, and factor subsets. 
+                 {colname: {description:'', factor1:'', factor2:'', ...}}
+        factors: factors and their subsets 
+                 {factor1: [subset1, subset2,...], factor2:[...], ...}
+        _matrix: data table as a numpy matrix for numerical analysis
+    """
+    def __init__(self, id):
+        super(Dataset, self).__init__("DATASET", id)
+        self.factors = defaultdict(dict)
+        self._matrix  = None
+
+    def print_columns(self, factor=None, subset=None):
+        """Readable display of data columns, with associated description,
+        factor, and subset.
+
+        Arguments:
+            factor:     restrict to only display this factor's samples
+            subset:    restrict to only display this subset's samples
+        """
+        if subset and not factor:
+            factors = [factor for factor in self.factors 
+                        if (subset in self.factors[factor])]
+        else:
+            factors = sorted(self.factors.keys()) if not factor else [factor]
+        print '\t'.join(['NAME', 'DESCRIPTION']+
+                        [factor.upper() for factor in factors])
+        # we reference the header, as it's in order and dicts are not
+        for col_name in self.table[0]: 
+            column = self.columns[col_name]
+            if col_name.startswith('GSM'):
+                print '\t'.join([col_name, column['description']]+
+                                [column[factor] for factor in factors])
+            else:
+                print '\t'.join((col_name, column['description']))
+
+
+    def matrix(self, refresh=False):
+        """Returns a numpy matrix of values built from the dataset's table.
+
+        This takes some time to return the first time it is run, but results are
+        cached for later use.
+
+        Arguments:
+            refresh:    rebuild the matrix (if data values changed) 
+                        [default = False]
+        """
+        # memoize the matrix (as it takes some time to generate)
+        if self._matrix != None and not refresh:
+            return self._matrix
+
+        try:
+            from numpy import array
+        except ImportError:
+            raise ImportError("This function requires Numpy, ", 
+                "but Numpy could not be imported.")
+
+        def tofloat(x):
+            try: 
+                return float(x)
+            except ValueError:
+                return float('nan')
+
+        header      = self.table[0]
+        samples     = [x for x in header if re.match(r'GSM\d+$', x)]
+        end_samples = header.index(samples[len(samples)-1])
+        matrix      = []
+        for row in self.table[1:]:
+            values = row[2:end_samples+1]
+            matrix.append([tofloat(x) for x in values])
+        self._matrix = array(matrix)
+        return self._matrix
+
+
+
+class Series(SOFTRecord):
     """Represents a GEO Series (GSE) record.
 
     Attributes:
@@ -123,6 +222,92 @@ class Series(SoftFile):
         self.platforms = []
         self.samples = []
 
+
+
+class NumericDataset(object):
+    """Represents a special form of a GEO Dataset that can be more easily
+    be used in statistical and numerical analysis. 
+
+    Attributes:
+        meta:       the original metadata information from the dataset
+        matrix:     a numpy matrix of the probe values, omitting non-sample cols
+        probes:     a numpy array of the probes, corresponding to rows in the
+                    matrix
+        header:     a numpy array of the header row from original table
+        factors:    the original factor information from the dataset
+
+    """
+
+    def __init__(self, dataset=None):
+        self.matrix     = deepcopy(dataset.matrix())
+        self.probes     = array([x[:2] for x in dataset.table[1:]])
+        self.header     = array(dataset.table[0])
+        self.factors    = deepcopy(dataset.factors) if dataset else None
+        self.meta       = deepcopy(dataset.meta) if dataset else None
+
+    def log2xform(self):
+        """Returns this dataset with the binary log applied to each value in
+        the data matrix."""
+
+        self.matrix = numpy.log2(self.matrix)
+        return self
+
+    def filter(self, fn=numpy.median):
+        """Filters probes from the data matrix that have maximum values below 
+        the value returned from `fn(self.matrix)`. This fn is by default the 
+        matrix median.
+
+        Returns the same dataset with the rows and probes below this value
+        removed.
+
+        Arguments:
+            fn:     a function that returns a single value for a matrix input.
+                    [default = numpy.median]
+        """
+        level = fn(self.matrix)
+        above = array([max(x) > level for x in self.matrix])
+        self.matrix = self.matrix[above,:]
+        self.probes = self.probes[above,:]
+        return self
+
+    def enriched(self, _subset, _factor, pval_cutoff, d_avg_cutoff):
+        """Returns an array of probes that could be considered enriched through
+        the following method:
+
+        1)  Perform an independent t-test on the probe values for the specified
+            subset against the probe values for the non-subset samples.
+        2)  Measure the magnitude of difference between the mean value for 
+            each probe across the subset samples and the mean value for the 
+            non-subset samples.
+        3)  Filter results from 1) and 2) based on specified cutoffs
+        4)  Return the probes that were significant in both measures.
+
+        Arguments:
+            _subset:    the subset to test for enriched genes
+            _factor:    the factor the subset belongs to
+            pval_cutoff:    the maximum p-value to consider significant
+            d_avg_cutoff:   the minimum difference in magnitude
+
+        """
+        samples = self.factors[_factor][_subset]
+        matrix  = self.matrix
+        probes  = self.probes
+        nprobes = range(len(matrix))
+
+        inA = array([x in samples for x in self.header[2:]])
+
+        A   = numpy.transpose(matrix[:, inA])
+        B   = numpy.transpose(matrix[:, numpy.invert(inA)])
+        mA  = numpy.mean(A, axis=0)
+        mB  = numpy.mean(B, axis=0)
+
+        t, pvals    = stats.ttest_ind(A, B)
+        # boolean arrays (T if significant, F otherwise) for the cutoffs
+        sig_pvals   = [x < pval_cutoff for x in pvals]
+        sig_diffs   = [abs(mA[i] - mB[i]) > d_avg_cutoff for i in nprobes]
+        sig_union   = array([sig_pvals[i] and sig_diffs[i] for i in nprobes])
+
+        return probes[sig_union, :]
 
 
 
