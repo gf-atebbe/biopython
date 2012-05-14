@@ -79,7 +79,6 @@ def get_geo(accn_or_file, destdir=None, amount='full', verbose=True):
         geo = _get_remote(accn_or_file, destdir, amount, verbose)
 
     if geo.endswith('.gz'):
-
         return parse(gzip.open(geo))
     else:
         return parse(open(geo))
@@ -208,7 +207,11 @@ def parse(source, verbose=True):
 
     # We only parse one record here; a file with multiple records (GDS, GSM) 
     # will recursively parse itself before returning anyway
-    return _parse(_source).next()
+    record = _parse(_source).next()
+    # optionally note where we got the file from
+    if not isinstance(_source, list):
+        record.source = source if isinstance(source, str) else source.name
+    return record
 
 
 

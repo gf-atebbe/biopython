@@ -54,10 +54,17 @@ class SOFTRecord(object):
 
     - Line format:
         [line-type char] [label] = [value]
+
+    Attributes:
+        id:      entity id (GEO accession)
+        type:    entity type
+        meta:    metadata information for the record {key:value}
+        source:  location of actual SOFT file (optional)
     """
     def __init__(self, type, id):
         self.id = id
         self.type = type
+        self.source = None
         self.meta = {}
 
     def __repr__(self):
