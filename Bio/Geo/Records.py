@@ -1,14 +1,21 @@
+# Copyright 2012 by Erik Clarke. All rights reserved.
+# This code is part of the Biopython distribution and governed by its
+# license.  Please see the LICENSE file that should have been included
+# as part of this package.
+"""Classes to represent records for NCBI's Gene Expression Omnibus (GEO).
+
+http://www.ncbi.nlm.nih.gov/geo/
+"""
+
+
 import re
 from collections import defaultdict
 from copy import deepcopy
 import numpy
 from numpy import array
-import warnings
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=RuntimeWarning)
-    import scipy.stats as stats
+import scipy.stats as stats
 
-def truncate(string, trunc=20):
+def _truncate(string, trunc=20):
     length = len(string)
     if length <= trunc: return string
     if trunc < 8: return '[...]'
@@ -18,7 +25,7 @@ def truncate(string, trunc=20):
     p2 = ''.join([x for x in string[length-half:]])
     return '[...]'.join((p1, p2))
 
-def pad(string, pad_to=20, justify='left'):
+def _pad(string, pad_to=20, justify='left'):
     length = len(string)
     if length >= pad_to: return string
     spacing = pad_to-length
@@ -56,6 +63,10 @@ class SOFTRecord(object):
     def __repr__(self):
         return self.id
 
+    def full(self):
+        """Print all information associated with this SOFTRecord."""
+        self.print_metadata()
+
     def print_metadata(self):
         """Prints the metadata associated with this data."""
         print("*** %s: %s ***" % (self.type, self.id))
@@ -88,22 +99,25 @@ class Record(SOFTRecord):
         """Prints a nicely-formatted overview of the data table.
 
         Arguments: (set any to < 0 to disable)
-        length      number of rows to print (omits middle) [default=20]
-        max_width:  maximum width of the table (omits end columns if needed) [default=80]
-        col_width:  width of each column (trims middle if needed) [default=20]
+        length      number of rows to print (omits middle) 
+        max_width:  maximum width of the table (omits ending columns if needed)
+        col_width:  width of each column (trims middle if needed)
         """
         num_rows = len(self.table)
         printed_ellipses = False
         for c, row in enumerate(self.table):
-            # if we're within the first or last part of the table (or displaying all rows)
+            # if we're within the first or last part of the table 
+            # (or displaying all rows)
             if (length < 0) or (c < length//2) or (c > num_rows-length//2):
                 line = ''   
                 i = 0
-                fill = lambda x: pad(truncate(x, trunc=col_width), pad_to=col_width)
+                def fill(x):
+                    _pad(_truncate(x, trunc=col_width), pad_to=col_width)
                 # set the column width if width is not -1
                 entry = fill(row[i]) if col_width > 0 else row[i]
                 # build the row, minding the max_width (if not -1)
-                while (i < len(row)) and ((max_width < 0) or (i < len(row) and len(line)+len(entry) < max_width)):
+                while ((i < len(row)) and ((max_width < 0) 
+                       or (i < len(row) and len(line)+len(entry) < max_width))):
                     entry = fill(row[i]) if col_width > 0 else row[i]
                     line = "%s\t%s" % (line, entry)
                     i += 1
@@ -119,6 +133,10 @@ class Record(SOFTRecord):
         for col in self.columns:
             print("%s:\t%s" % (col, self.columns[col]['description']))
 
+    def full(self):
+        self.print_metadata()
+        self.print_table()
+        self.print_columns()
 
 
 class Dataset(Record):
@@ -165,7 +183,6 @@ class Dataset(Record):
             else:
                 print '\t'.join((col_name, column['description']))
 
-
     def matrix(self, refresh=False):
         """Returns a numpy matrix of values built from the dataset's table.
 
@@ -183,7 +200,7 @@ class Dataset(Record):
         try:
             from numpy import array
         except ImportError:
-            raise ImportError("This function requires Numpy, ", 
+            raise ImportError("This function requires Numpy, "+ 
                 "but Numpy could not be imported.")
 
         def tofloat(x):
@@ -201,6 +218,9 @@ class Dataset(Record):
             matrix.append([tofloat(x) for x in values])
         self._matrix = array(matrix)
         return self._matrix
+
+    def to_numeric(self):
+        return NumericDataset(self)
 
 
 
@@ -224,7 +244,7 @@ class Series(SOFTRecord):
 
 
 
-class NumericDataset(object):
+class NumericDataset(SOFTRecord):
     """Represents a special form of a GEO Dataset that can be more easily
     be used in statistical and numerical analysis. 
 
@@ -235,40 +255,57 @@ class NumericDataset(object):
                     matrix
         header:     a numpy array of the header row from original table
         factors:    the original factor information from the dataset
-
     """
 
-    def __init__(self, dataset=None):
+    def __init__(self, dataset=None, do_log2=True):
+        super(NumericDataset, self).__init__("NUMERIC DATASET", dataset.id)
         self.matrix     = deepcopy(dataset.matrix())
         self.probes     = array([x[:2] for x in dataset.table[1:]])
         self.header     = array(dataset.table[0])
         self.factors    = deepcopy(dataset.factors) if dataset else None
         self.meta       = deepcopy(dataset.meta) if dataset else None
+        self._log2xformed = False
+        if do_log2:
+            self.log2xform()
+
 
     def log2xform(self):
         """Returns this dataset with the binary log applied to each value in
-        the data matrix."""
+        the data matrix.
 
+        This operation is performed in-place for performance reasons.
+        """
         self.matrix = numpy.log2(self.matrix)
+        self._log2xformed = True
         return self
+
+
+    def log2xformed(self):
+        """Returns True if the matrix has been log2 transformed since being 
+        imported as a NumericDataset."""
+        return self._log2xformed
+
 
     def filter(self, fn=numpy.median):
         """Filters probes from the data matrix that have maximum values below 
         the value returned from `fn(self.matrix)`. This fn is by default the 
-        matrix median.
+        matrix median (numpy.median).
 
         Returns the same dataset with the rows and probes below this value
-        removed.
+        removed, so as to allow chaining of methods (such as 
+        dataset.filter().log2xform()).
+
+        This operation is performed in-place for performance reasons.
 
         Arguments:
             fn:     a function that returns a single value for a matrix input.
-                    [default = numpy.median]
         """
         level = fn(self.matrix)
         above = array([max(x) > level for x in self.matrix])
         self.matrix = self.matrix[above,:]
         self.probes = self.probes[above,:]
         return self
+
 
     def enriched(self, _subset, _factor, pval_cutoff, d_avg_cutoff):
         """Returns an array of probes that could be considered enriched through
@@ -282,12 +319,14 @@ class NumericDataset(object):
         3)  Filter results from 1) and 2) based on specified cutoffs
         4)  Return the probes that were significant in both measures.
 
+        Consider the effects of multiple comparisons when selecting the p-value
+        cutoff.
+
         Arguments:
             _subset:    the subset to test for enriched genes
             _factor:    the factor the subset belongs to
             pval_cutoff:    the maximum p-value to consider significant
             d_avg_cutoff:   the minimum difference in magnitude
-
         """
         samples = self.factors[_factor][_subset]
         matrix  = self.matrix
@@ -311,4 +350,5 @@ class NumericDataset(object):
 
 
 
-    
+
+

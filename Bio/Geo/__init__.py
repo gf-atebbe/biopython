@@ -1,7 +1,24 @@
+# Copyright 2012 by Erik Clarke. All rights reserved.
+# This code is part of the Biopython distribution and governed by its
+# license.  Please see the LICENSE file that should have been included
+# as part of this package.
+"""Retrieval and parsing methods for NCBI's Gene Expression Omnibus (GEO). 
+
+To retrieve a local or remote GEO file, specify the filename (if local) or the
+accession id (if remote) using get_geo. 
+Example:
+>> gds1962 = get_geo("GDS1962") # remote retrieval
+>> gds1962.print_metadata()
+>> gds1962.print_columns()
+>> nset = gds1962.to_numeric() # numeric representation of GDS1962
+>> nset.enriched('factor1', 'subset1') # find the enriched genes in a subset
+"""
+
 import re
 import os
 import urllib
 import tempfile
+import gzip
 from copy import deepcopy
 
 try:
@@ -62,7 +79,7 @@ def get_geo(accn_or_file, destdir=None, amount='full', verbose=True):
         geo = _get_remote(accn_or_file, destdir, amount, verbose)
 
     if geo.endswith('.gz'):
-        import gzip
+
         return parse(gzip.open(geo))
     else:
         return parse(open(geo))
@@ -177,30 +194,22 @@ def parse(source, verbose=True):
     if isinstance(source, str):
         _source = source.splitlines()
         if len(_source) < 2: 
-            raise ValueError("Source must be handle or raw text of SOFT file.")
-    if verbose: print "Parsing source..."
-    # Implementation notes:
-    # User-facing behavior is always to return one record.
-    # However, we may be parsing a series-type SOFT file, which
-    # may contain many records, and we would like the ability to
-    # iteratively parse these to build the final Series object.
+            if os.path.isfile(source):
+                if source.endswith('.gz'):
+                    _source = gzip.open(source)
+                else:
+                    _source = open(source)
+            else: 
+                raise ValueError("Source must be filename, handle or raw text"+
+                    " of SOFT file.")
+    else: _source = source
 
-    for geo in _parse(source):
-        return geo 
+    if verbose: print "Parsing source as %s..." % _source.__class__
 
+    # We only parse one record here; a file with multiple records (GDS, GSM) 
+    # will recursively parse itself before returning anyway
+    return _parse(_source).next()
 
-# -- Code to analyze data tables in GEO records -- #
-
-def log2xform(dataset):
-    matrix = dataset.table_as_matrix()
-    return numpy.log2(matrix)
-
-def filter2median(dataset):
-    """Returns a copy of the dataset with the data table filtered 
-    to remove probes that had no values above the median value of all 
-    values in the matrix.
-    """
-    _ds = deepcopy(dataset)
 
 
     
