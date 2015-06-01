@@ -56,7 +56,7 @@ def _get_remote(accn, destdir, amount, verbose):
         url = 'ftp://ftp.ncbi.nih.gov/pub/geo/DATA/SOFT/GDS/'+filename
     elif geotype == 'GSE' and amount == 'full':
         filename = accn+'_family.soft.gz'
-        url = '/'.os.path.join("ftp://ftp.ncbi.nih.gov/pub/geo/DATA/SOFT/by_series", accn, filename)
+        url = os.path.join("ftp://ftp.ncbi.nih.gov/pub/geo/DATA/SOFT/by_series", accn, filename)
     else:
         filename = accn+'.soft'
         url = ('http://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?'
@@ -147,7 +147,7 @@ def _parse(source):
                 record  = Series(id)
                 meta    = _filter(source, r'!Series')
                 rest    = _filter(source, r'[!\^]Series', invert=True)
-                _add_attributes(record, lines)
+                _add_attributes(record, line)
                 for record in _parse(rest):
                     if subrecord.type == 'PLATFORM':
                         record.platforms.append(subrecord)
