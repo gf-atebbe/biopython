@@ -54,7 +54,7 @@ def _get_remote(accn, destdir, amount, verbose):
     if geotype == 'GDS':
         filename = accn+'.soft.gz'
         url = 'ftp://ftp.ncbi.nih.gov/pub/geo/DATA/SOFT/GDS/'+filename
-    elif geo_type == 'GSE' and amount == 'full':
+    elif geotype == 'GSE' and amount == 'full':
         filename = accn+'_family.soft.gz'
         url = '/'.join("ftp://ftp.ncbi.nih.gov/pub/geo/DATA/SOFT/by_series",
                         accn, filename)
